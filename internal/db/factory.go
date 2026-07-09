@@ -3,9 +3,10 @@ package db
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
-// Factory creates a Database backend based on configuration.
+// Factory creates Database backends from configuration.
 type Factory struct{}
 
 // NewFactory creates a new database factory.
@@ -13,12 +14,13 @@ func NewFactory() *Factory {
 	return &Factory{}
 }
 
-// CreateBackend creates and connects a database backend from config.
-// configType is "postgres", "sqlite", or "mysql"
-// config is a map of connection parameters
+// CreateBackend creates and connects a database backend with retry support.
 func (f *Factory) CreateBackend(ctx context.Context, dbType string, config map[string]interface{}) (Database, error) {
-	var backend Database
+	return CreateBackendWithRetry(ctx, dbType, config, DefaultRetryConfig())
+}
 
+// createBackend creates a Database backend without connecting or retry wrapping.
+func (f *Factory) createBackend(ctx context.Context, dbType string, config map[string]interface{}) (Database, error) {
 	switch dbType {
 	case "postgres":
 		cfg := PostgresConfig{
@@ -29,24 +31,45 @@ func (f *Factory) CreateBackend(ctx context.Context, dbType string, config map[s
 			DBName:   getString(config, "dbname", "postgres"),
 			SSLMode:  getString(config, "sslmode", "disable"),
 		}
-		backend = NewPostgresBackend(cfg)
+		return NewPostgresBackend(cfg), nil
 
 	case "sqlite":
-		path := getString(config, "path", config["dbname"].(string))
-		if path == "" {
-			path = getString(config, "dbname", "data.db")
+		path := getString(config, "dbname", "data.db")
+		if p, ok := config["path"]; ok {
+			if s, ok := p.(string); ok {
+				path = s
+			}
 		}
-		backend = NewSQLiteBackend(path)
+		return NewSQLiteBackend(path), nil
 
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", dbType)
 	}
+}
 
-	if err := backend.Connect(ctx); err != nil {
-		return nil, fmt.Errorf("cannot connect to %s: %w", dbType, err)
+// CreateBackendWithRetry creates, connects, and wraps a database backend
+// with automatic retry and reconnection logic.
+func CreateBackendWithRetry(ctx context.Context, dbType string, config map[string]interface{}, retryCfg RetryConfig) (Database, error) {
+	factory := &Factory{}
+
+	// Create a context with timeout for the initial connection
+	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	db, err := factory.createBackend(connectCtx, dbType, config)
+	if err != nil {
+		return nil, err
 	}
 
-	return backend, nil
+	// Wrap with retry logic
+	retryDB := NewRetryDB(db, retryCfg)
+
+	// Try connecting with retry
+	if err := retryDB.ConnectWithRetry(connectCtx); err != nil {
+		return nil, fmt.Errorf("cannot connect to %s: %w", dbType, FriendlyError(err))
+	}
+
+	return retryDB, nil
 }
 
 func getString(m map[string]interface{}, key, defaultVal string) string {
