@@ -11,6 +11,7 @@ type RootModel struct {
 	height int
 
 	focusedPanel panel
+	schemaTree   TreeModel
 }
 
 // panel identifies which panel currently has focus.
@@ -30,6 +31,7 @@ func NewRootModel() RootModel {
 		width:        80,
 		height:       24,
 		focusedPanel: panelSchemaTree,
+		schemaTree:   NewTreeModel(),
 	}
 }
 

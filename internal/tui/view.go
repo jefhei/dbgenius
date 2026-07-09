@@ -43,17 +43,15 @@ func (m RootModel) View() string {
 	statusBar := m.renderStatusBar()
 
 	// Layout: Left (schema) | Right (editor top + results bottom)
-	// The layout adapts to available space
 	leftWidth := 30
 	if leftWidth > m.width/4 {
 		leftWidth = m.width / 4
 	}
-	rightWidth := m.width - leftWidth - 3 // 3 for borders/gaps
+	rightWidth := m.width - leftWidth - 3
 
 	rightTopHeight := m.height / 3
-	rightBottomHeight := m.height - rightTopHeight - 2 // 2 for status bar
+	rightBottomHeight := m.height - rightTopHeight - 2
 
-	// Build panels with borders
 	schemaBorder := unfocusedBorderStyle
 	editorBorder := unfocusedBorderStyle
 	resultsBorder := unfocusedBorderStyle
@@ -92,8 +90,9 @@ func (m RootModel) View() string {
 
 func (m RootModel) renderSchemaPanel() string {
 	title := titleStyle.Render("📂 Schemas")
-	items := "  No databases connected\n\n  Connect to a database to\n  browse schemas and tables."
-	return fmt.Sprintf("%s\n%s", title, items)
+	treeContent := m.schemaTree.View()
+	helpLine := helpStyle.Render("\n  ↑↓ navigate  → expand  ← collapse")
+	return fmt.Sprintf("%s\n%s%s", title, treeContent, helpLine)
 }
 
 func (m RootModel) renderEditorPanel() string {
@@ -117,10 +116,9 @@ func (m RootModel) renderStatusBar() string {
 	}
 	focusStr := focusNames[m.focusedPanel]
 
-	// Build status bar
 	left := statusBarStyle.Render(fmt.Sprintf(" dbgenius | %s ", focusStr))
-	right := statusBarStyle.Render(" Ctrl+C: quit  |  ?: help ")
-	
+	right := statusBarStyle.Render(" Ctrl+C: quit  |  Tab: switch focus")
+
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
