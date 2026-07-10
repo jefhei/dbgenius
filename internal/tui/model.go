@@ -2,6 +2,7 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jefhei/dbgenius/internal/db"
 )
 
 // RootModel is the top-level model managing all child models.
@@ -12,6 +13,10 @@ type RootModel struct {
 
 	focusedPanel panel
 	schemaTree   TreeModel
+	dataViewer   DataViewerModel
+
+	// Connected database for data browsing
+	db *db.IntrospectedBackend
 }
 
 // panel identifies which panel currently has focus.
@@ -32,10 +37,17 @@ func NewRootModel() RootModel {
 		height:       24,
 		focusedPanel: panelSchemaTree,
 		schemaTree:   NewTreeModel(),
+		dataViewer:   NewDataViewerModel(),
 	}
 }
 
 // Init initializes the model and returns any initial commands.
 func (m RootModel) Init() tea.Cmd {
 	return nil
+}
+
+// SetDB sets the connected database and propagates it to child components.
+func (m *RootModel) SetDB(database *db.IntrospectedBackend) {
+	m.db = database
+	m.schemaTree.SetDB(database, database.GetType())
 }

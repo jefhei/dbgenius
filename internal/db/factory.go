@@ -66,7 +66,7 @@ func CreateBackendWithRetry(ctx context.Context, dbType string, config map[strin
 
 	// Try connecting with retry
 	if err := retryDB.ConnectWithRetry(connectCtx); err != nil {
-		return nil, fmt.Errorf("cannot connect to %s: %w", dbType, FriendlyError(err))
+		return nil, fmt.Errorf("cannot connect to %s: %s", dbType, FriendlyError(err))
 	}
 
 	return retryDB, nil

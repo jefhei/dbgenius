@@ -111,12 +111,41 @@ func (m TreeModel) Update(msg tea.Msg) (TreeModel, tea.Cmd) {
 				m.ensureVisible()
 			}
 		case "right", "l", "enter":
-			m.toggleExpand()
+			return m.handleEnter()
 		case "left", "h":
 			m.collapseCurrent()
 		}
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
+	}
+
+	return m, nil
+}
+
+// handleEnter expands/collapses schemas or selects tables.
+func (m TreeModel) handleEnter() (TreeModel, tea.Cmd) {
+	if m.cursor >= len(m.nodes) {
+		return m, nil
+	}
+
+	node := &m.nodes[m.cursor]
+	if node.HasChildren {
+		if node.Expanded {
+			m.collapseCurrent()
+		} else {
+			node.Expanded = true
+		}
+		return m, nil
+	}
+
+	// Table node selected — emit TableSelectedMsg
+	if node.Schema != "" && node.Table != "" {
+		return m, func() tea.Msg {
+			return TableSelectedMsg{
+				Schema: node.Schema,
+				Table:  node.Table,
+			}
+		}
 	}
 
 	return m, nil
@@ -232,24 +261,6 @@ func (m *TreeModel) LoadTables(schemaIdx int, tables []db.TableInfo) {
 	if schemaIdx < len(m.nodes) {
 		m.nodes[schemaIdx].Expanded = true
 		m.nodes[schemaIdx].childrenLoaded = true
-	}
-}
-
-func (m *TreeModel) toggleExpand() {
-	if m.cursor >= len(m.nodes) {
-		return
-	}
-
-	node := &m.nodes[m.cursor]
-	if !node.HasChildren {
-		return
-	}
-
-	if node.Expanded {
-		m.collapseCurrent()
-	} else {
-		// Expand: tell the parent to load tables if not loaded
-		node.Expanded = true
 	}
 }
 

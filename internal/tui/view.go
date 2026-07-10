@@ -104,8 +104,12 @@ func (m RootModel) renderEditorPanel() string {
 
 func (m RootModel) renderResultsPanel() string {
 	title := titleStyle.Render("📊 Results")
-	placeholder := "  Run a query to see results"
-	return fmt.Sprintf("%s\n%s", title, placeholder)
+	content := m.dataViewer.View()
+	// Data viewer includes its own newlines, remove trailing empty
+	if content == "" {
+		content = "  Run a query to see results"
+	}
+	return fmt.Sprintf("%s\n%s", title, content)
 }
 
 func (m RootModel) renderStatusBar() string {
