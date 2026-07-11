@@ -13,10 +13,14 @@ type RootModel struct {
 
 	focusedPanel panel
 	schemaTree   TreeModel
+	sqlEditor    SQLEditorModel
 	dataViewer   DataViewerModel
 
 	// Connected database for data browsing
 	db *db.IntrospectedBackend
+
+	// Show help overlay
+	showHelp bool
 }
 
 // panel identifies which panel currently has focus.
@@ -37,7 +41,9 @@ func NewRootModel() RootModel {
 		height:       24,
 		focusedPanel: panelSchemaTree,
 		schemaTree:   NewTreeModel(),
+		sqlEditor:    NewSQLEditorModel(),
 		dataViewer:   NewDataViewerModel(),
+		showHelp:     false,
 	}
 }
 
