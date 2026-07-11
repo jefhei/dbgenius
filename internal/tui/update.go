@@ -113,14 +113,14 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			// Cycle forward through panels
 			m.focusedPanel = m.nextPanel()
-			m.syncFocus()
+			m.syncFocus(&cmds)
 			return m, nil
 
 		case "shift+tab":
 			// Cycle backward through panels
 			prev := (int(m.focusedPanel) - 1 + int(panelCount)) % int(panelCount)
 			m.focusedPanel = panel(prev)
-			m.syncFocus()
+			m.syncFocus(&cmds)
 			return m, nil
 		}
 
@@ -181,16 +181,13 @@ func (m RootModel) nextPanel() panel {
 }
 
 // syncFocus updates focus state of child models when focus panel changes.
-func (m *RootModel) syncFocus() {
+func (m *RootModel) syncFocus(cmds *[]tea.Cmd) {
 	// Focus the newly selected panel, blur others
 	switch m.focusedPanel {
 	case panelSchemaTree:
 		m.sqlEditor.Blur()
 	case panelEditor:
-		cmd := m.sqlEditor.Focus()
-		if cmd != nil {
-			go func() { cmd() }()
-		}
+		*cmds = append(*cmds, m.sqlEditor.Focus())
 	case panelResults:
 		m.sqlEditor.Blur()
 	}
