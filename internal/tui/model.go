@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jefhei/dbgenius/internal/ai"
@@ -41,6 +42,10 @@ type streamBuffer struct {
 	stopped bool
 }
 
+// ollamaHealthCheckMsg triggers a periodic check of Ollama availability.
+type ollamaHealthCheckMsg struct{}
+
+
 // RootModel is the top-level model managing all child models.
 type RootModel struct {
 	ready bool
@@ -68,6 +73,13 @@ type RootModel struct {
 
 	// AI response state
 	aiResponse string
+
+	// Ollama connection health
+	ollamaAvailable     bool
+	ollamaCheckInterval time.Duration
+
+	// Whether to stop the background health check ticker
+	ollamaChecking bool
 }
 
 // panel identifies which panel currently has focus.
@@ -96,6 +108,11 @@ func NewRootModel() RootModel {
 
 // Init initializes the model and returns any initial commands.
 func (m RootModel) Init() tea.Cmd {
+	// If we have an AI client, start periodic health checks
+	if m.aiClient != nil {
+		m.ollamaChecking = true
+		return m.startOllamaHealthCheck()
+	}
 	return nil
 }
 
@@ -109,4 +126,29 @@ func (m *RootModel) SetDB(database *db.IntrospectedBackend) {
 func (m *RootModel) SetAIClient(client *ai.Client) {
 	m.aiClient = client
 	m.schemaContextBuilder = ai.NewSchemaContextBuilder()
+	m.ollamaCheckInterval = 30 * time.Second
+}
+
+// startOllamaHealthCheck returns a command that checks Ollama availability
+// and schedules subsequent checks periodically.
+func (m RootModel) startOllamaHealthCheck() tea.Cmd {
+	if m.aiClient == nil {
+		m.ollamaAvailable = false
+		return nil
+	}
+
+	return tea.Tick(m.ollamaCheckInterval, func(t time.Time) tea.Msg {
+		return ollamaHealthCheckMsg{}
+	})
+}
+
+// performOllamaCheck runs the actual health check against the Ollama server.
+func (m RootModel) performOllamaCheck() tea.Msg {
+	if m.aiClient == nil {
+		return nil
+	}
+
+	err := m.aiClient.HealthCheck(context.Background())
+	m.ollamaAvailable = (err == nil)
+	return nil
 }

@@ -302,6 +302,16 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.focusedPanel = panelResults
 		return m, nil
 
+	case ollamaHealthCheckMsg:
+		// Periodic health check for Ollama availability
+		// Run the actual check in a goroutine
+		cmd = m.performOllamaCheck
+		// Schedule the next check
+		if m.ollamaChecking {
+			cmds = append(cmds, m.startOllamaHealthCheck())
+		}
+		return m, cmd
+
 	case queryCancelledMsg:
 		// Query was cancelled — reset state
 		m.isExecuting = false

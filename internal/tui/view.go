@@ -239,6 +239,13 @@ func (m RootModel) buildHelpContent() string {
 	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("Tab / Shift+Tab"), helpDescStyle.Render("Cycle focus between panels")))
 	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("Ctrl+W / Ctrl+Shift+Tab"), helpDescStyle.Render("Alternative focus switch")))
 	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("?"), helpDescStyle.Render("Toggle this help screen")))
+	if m.aiClient != nil {
+		statusIcon := "✅"
+		if !m.ollamaAvailable {
+			statusIcon = "❌"
+		}
+		b.WriteString(fmt.Sprintf("  %s  %s (%s)\n", statusIcon, helpDescStyle.Render("Ollama"), helpDescStyle.Render(m.aiClient.BaseURL())))
+	}
 	b.WriteString("\n")
 
 	// Schema Tree
