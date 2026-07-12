@@ -109,6 +109,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if err != nil {
+				getErrorLogger().LogError("query execution", err)
 				return tableDataErrorMsg{err: err, schema: "", table: ""}
 			}
 
@@ -556,6 +557,7 @@ func startExplainStream(client *ai.Client, prompt string) tea.Msg {
 			}
 		})
 		if err != nil {
+			getErrorLogger().LogError("/explain stream", err)
 			buf.ch <- aiStreamTokenMsg{
 				token:        "",
 				done:         true,
