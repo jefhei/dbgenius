@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -189,8 +190,45 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focusedPanel = panelResults
 				return m, nil
 			}
+			if msg.Args == "" {
+				m.dataViewer.state = viewerError
+				m.dataViewer.errMsg = "⚠️  Usage: /suggest <description of what you need>"
+				m.focusedPanel = panelResults
+				return m, nil
+			}
+
+			// Set loading state in results while generating
+			m.aiResponse = ""
+			m.dataViewer.state = viewerLoading
 			m.focusedPanel = panelResults
-			return m, nil
+
+			// Build schema context
+			var schemaCtx string
+			if m.db != nil {
+				ctx := context.Background()
+				schemaInfo, err := m.db.Introspect(ctx)
+				if err == nil && schemaInfo != nil && m.schemaContextBuilder != nil {
+					schemaCtx = m.schemaContextBuilder.BuildContext(schemaInfo, m.db.GetIntrospector())
+				}
+			}
+
+			// Build prompt and send to Ollama
+			aiClient := m.aiClient
+			userRequest := msg.Args
+			prompt := ai.BuildSuggestPrompt(schemaCtx, userRequest)
+			cmd = func() tea.Msg {
+				response, err := aiClient.Generate(context.Background(), "", prompt)
+				// Extract SQL from the response
+				sql := extractSQL(response)
+				if sql == "" {
+					sql = "/* AI did not return a valid SQL query */\n" + response
+				}
+				return aiSuggestionMsg{
+					query: sql,
+					err:   err,
+				}
+			}
+			return m, cmd
 
 		case cmdOptimize:
 			if m.aiClient == nil {
@@ -211,7 +249,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case aiResponseMsg:
-		// Handle AI response
+		// Handle AI response (display in results panel)
 		if msg.err != nil {
 			m.aiResponse = ""
 			m.dataViewer.state = viewerError
@@ -223,6 +261,19 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dataViewer.totalRows = 0
 		}
 		m.focusedPanel = panelResults
+		return m, nil
+
+	case aiSuggestionMsg:
+		// Handle AI suggestion (place in editor)
+		if msg.err != nil {
+			m.aiResponse = ""
+			m.dataViewer.state = viewerError
+			m.dataViewer.errMsg = ai.FriendlyError(msg.err)
+			m.focusedPanel = panelResults
+		} else {
+			m.sqlEditor.SetValue(msg.query)
+			m.focusedPanel = panelEditor
+		}
 		return m, nil
 
 	case queryCancelledMsg:
@@ -380,4 +431,58 @@ func renderError(err error) string {
 		return ""
 	}
 	return fmt.Sprintf("✗ %s", err.Error())
+}
+
+// extractSQL attempts to extract a SQL query from an AI response.
+// It looks for SQL code blocks (```sql ... ```) or standalone SQL statements.
+// Returns the full response if no SQL pattern is found.
+func extractSQL(response string) string {
+	if response == "" {
+		return ""
+	}
+
+	// Try to extract from a SQL code block first
+	lower := strings.ToLower(response)
+
+	// Pattern: ```sql ... ```
+	const sqlBlockStart = "```sql"
+	const sqlBlockEnd = "```"
+
+	startIdx := strings.Index(lower, sqlBlockStart)
+	if startIdx >= 0 {
+		// Move past the opening ```sql
+		contentStart := startIdx + len(sqlBlockStart)
+		endIdx := strings.Index(response[contentStart:], sqlBlockEnd)
+		if endIdx >= 0 {
+			sql := strings.TrimSpace(response[contentStart : contentStart+endIdx])
+			return sql
+		}
+		// Fallback: take everything after the opening tag
+		sql := strings.TrimSpace(response[contentStart:])
+		if sql != "" {
+			return sql
+		}
+	}
+
+	// Pattern: ``` ... ``` (any code block) - try to extract it
+	startIdx = strings.Index(lower, "```")
+	if startIdx >= 0 {
+		contentStart := startIdx + 3
+		// Skip past any language identifier on the same line
+		rest := response[contentStart:]
+		newlineIdx := strings.IndexByte(rest, '\n')
+		if newlineIdx >= 0 {
+			contentStart += newlineIdx + 1
+		}
+		endIdx := strings.Index(response[contentStart:], sqlBlockEnd)
+		if endIdx >= 0 {
+			sql := strings.TrimSpace(response[contentStart : contentStart+endIdx])
+			if sql != "" {
+				return sql
+			}
+		}
+	}
+
+	// No code block found — return the full response as-is
+	return strings.TrimSpace(response)
 }

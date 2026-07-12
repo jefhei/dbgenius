@@ -18,6 +18,12 @@ type aiResponseMsg struct {
 	command  SlashCommand
 }
 
+// aiSuggestionMsg carries an AI-suggested query to be placed in the editor.
+type aiSuggestionMsg struct {
+	query string
+	err   error
+}
+
 // RootModel is the top-level model managing all child models.
 type RootModel struct {
 	ready bool
