@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -22,7 +23,7 @@ type ExecuteQueryMsg struct {
 }
 
 // SQLEditorModel implements a multi-line SQL editor with vim-like mode toggling,
-// Ctrl+Enter execution, Tab indentation, and query history.
+// Ctrl+Enter execution, Tab indentation, query history, and SQL syntax highlighting.
 type SQLEditorModel struct {
 	textarea     textarea.Model
 	mode         EditorMode
@@ -34,6 +35,12 @@ type SQLEditorModel struct {
 	history      []string
 	historyPos   int // -1 means not browsing history
 	maxHistory   int
+
+	// Viewport for scrolling highlighted content
+	viewport viewport.Model
+
+	// Scroll tracking (persists across View() value copies)
+	scrollOffset int
 
 	// Styles
 	focusedStyle   lipgloss.Style
@@ -63,9 +70,9 @@ func NewSQLEditorModel() SQLEditorModel {
 	ta.FocusedStyle = focusedStyle
 	ta.BlurredStyle = blurredStyle
 
-	// Override the default InsertNewline key to use Enter normally
-	// The textarea already maps Enter to insert newline by default,
-	// so we keep that. Ctrl+Enter is handled separately in Update.
+	// Create viewport for scrolling highlighted content
+	vp := viewport.New(60, 10)
+	vp.Style = lipgloss.NewStyle()
 
 	return SQLEditorModel{
 		textarea:   ta,
@@ -74,6 +81,7 @@ func NewSQLEditorModel() SQLEditorModel {
 		history:    make([]string, 0, 100),
 		historyPos: -1,
 		maxHistory: 100,
+		viewport:   vp,
 		placeholder: "  Enter SQL here...\n  Ctrl+Enter to execute  |  Esc: command mode  |  i: insert mode",
 		focusedStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#A6E3A1")),
@@ -119,6 +127,8 @@ func (m *SQLEditorModel) SetSize(width, height int) {
 	}
 	m.textarea.SetWidth(width - 2)
 	m.textarea.SetHeight(taHeight)
+	m.viewport.Width = width - 2
+	m.viewport.Height = taHeight
 	m.dirty = true
 }
 
@@ -196,6 +206,8 @@ func (m SQLEditorModel) Update(msg tea.Msg) (SQLEditorModel, tea.Cmd) {
 	// Default: delegate to textarea
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
+	// Update scroll position based on new cursor location
+	m.updateScrollPosition(m.textarea.Line())
 	return m, cmd
 }
 
@@ -221,17 +233,20 @@ func (m SQLEditorModel) handleInsertModeKey(msg tea.KeyMsg) (SQLEditorModel, tea
 	case "tab":
 		// Insert 4 spaces for indentation
 		m.textarea.InsertString("    ")
+		m.updateScrollPosition(m.textarea.Line())
 		return m, nil
 
 	case "ctrl+u":
 		// Clear editor (line delete in vim)
 		m.textarea.Reset()
+		m.scrollOffset = 0
 		return m, nil
 	}
 
 	// Default: delegate to textarea
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
+	m.updateScrollPosition(m.textarea.Line())
 	return m, cmd
 }
 
@@ -259,6 +274,7 @@ func (m SQLEditorModel) handleCommandModeKey(msg tea.KeyMsg) (SQLEditorModel, te
 		// Insert new line below and enter insert mode
 		m.textarea.InsertString("\n")
 		m.mode = editorInsert
+		m.updateScrollPosition(m.textarea.Line())
 		return m, nil
 
 	case "O":
@@ -267,14 +283,17 @@ func (m SQLEditorModel) handleCommandModeKey(msg tea.KeyMsg) (SQLEditorModel, te
 		m.textarea.InsertString("\n")
 		m.textarea.CursorUp()
 		m.mode = editorInsert
+		m.updateScrollPosition(m.textarea.Line())
 		return m, nil
 
 	case "j", "down":
 		m.textarea.CursorDown()
+		m.updateScrollPosition(m.textarea.Line())
 		return m, nil
 
 	case "k", "up":
 		m.textarea.CursorUp()
+		m.updateScrollPosition(m.textarea.Line())
 		return m, nil
 
 	case "h", "left":
@@ -299,17 +318,20 @@ func (m SQLEditorModel) handleCommandModeKey(msg tea.KeyMsg) (SQLEditorModel, te
 
 	case "G":
 		// Go to last line
+		m.textarea.CursorEnd()
+		// Then go to the very bottom
 		for i := 0; i < m.textarea.LineCount(); i++ {
 			m.textarea.CursorDown()
 		}
+		m.updateScrollPosition(m.textarea.Line())
 		return m, nil
 
 	case "g":
-		// gg: go to first line — handled as sequence
-		m.textarea.CursorUp()
-		for i := 0; i < m.textarea.LineCount(); i++ {
+		// gg: go to first line
+		for m.textarea.Line() > 0 {
 			m.textarea.CursorUp()
 		}
+		m.scrollOffset = 0
 		return m, nil
 
 	case "x":
@@ -352,6 +374,7 @@ func (m SQLEditorModel) handleCommandModeKey(msg tea.KeyMsg) (SQLEditorModel, te
 		// In command mode, Enter switches to insert mode and adds newline
 		m.mode = editorInsert
 		m.textarea.InsertString("\n")
+		m.updateScrollPosition(m.textarea.Line())
 		return m, nil
 
 	case "esc":
@@ -362,7 +385,7 @@ func (m SQLEditorModel) handleCommandModeKey(msg tea.KeyMsg) (SQLEditorModel, te
 	return m, nil
 }
 
-// View renders the editor.
+// View renders the editor with SQL syntax highlighting.
 func (m SQLEditorModel) View() string {
 	if !m.dirty && m.cachedView != "" {
 		return m.cachedView
@@ -370,10 +393,34 @@ func (m SQLEditorModel) View() string {
 
 	var b strings.Builder
 
-	// Render the textarea
-	taView := m.textarea.View()
-	if taView != "" {
-		b.WriteString(taView)
+	// Get content and cursor position
+	content := m.textarea.Value()
+	cursorRow := m.textarea.Line()
+	lineInfo := m.textarea.LineInfo()
+	cursorCol := lineInfo.ColumnOffset
+
+	// Render highlighted SQL content
+	contentWidth := m.viewport.Width
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+	highlighted := highlightSQL(content, cursorRow, cursorCol, true, contentWidth)
+
+	// Apply stored scroll offset before viewport.Ready
+	m.viewport.YOffset = m.scrollOffset
+
+	// Set viewport content and render
+	m.viewport.SetContent(highlighted)
+	vpView := m.viewport.View()
+	b.WriteString(vpView)
+
+	// If content is empty, show placeholder
+	if content == "" && !m.focused {
+		_ = b.WriteByte('\n')
+		placeholderStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6C7086")).
+			Italic(true)
+		b.WriteString(placeholderStyle.Render("  Enter SQL here..."))
 	}
 
 	// Mode indicator line
@@ -385,6 +432,35 @@ func (m SQLEditorModel) View() string {
 	m.cachedView = result
 	m.dirty = false
 	return result
+}
+
+// updateScrollPosition adjusts the scroll offset so the cursor line
+// stays visible in the viewport.
+func (m *SQLEditorModel) updateScrollPosition(cursorRow int) {
+	if m.viewport.Height <= 0 {
+		return
+	}
+	visibleBottom := m.scrollOffset + m.viewport.Height - 1
+	visibleTop := m.scrollOffset
+
+	// Target zone: cursor in top 2/3s of viewport
+	targetZoneBottom := m.scrollOffset + (m.viewport.Height * 2 / 3)
+	if targetZoneBottom < 1 {
+		targetZoneBottom = 1
+	}
+
+	if cursorRow < visibleTop {
+		m.scrollOffset = cursorRow
+	} else if cursorRow > visibleBottom-1 {
+		m.scrollOffset = cursorRow - m.viewport.Height + 2
+	} else if cursorRow > targetZoneBottom {
+		m.scrollOffset = cursorRow - m.viewport.Height*2/3 + 1
+	}
+
+	// Clamp
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
 }
 
 // renderModeIndicator shows the current mode (INSERT/COMMAND).
