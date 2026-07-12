@@ -155,12 +155,24 @@ func (m RootModel) renderStatusBar() string {
 	}
 	focusStr := focusNames[m.focusedPanel]
 
+	// Connection status
 	var dbInfo string
+	var connStatus string
 	if m.db != nil {
 		dbType := m.db.GetType()
 		dbInfo = fmt.Sprintf(" %s ", strings.ToUpper(dbType))
+		connStatus = " ● "
 	} else {
 		dbInfo = " NO DB "
+		connStatus = " ○ "
+	}
+
+	// Selected table info
+	var tableInfo string
+	if m.dataViewer.schema != "" && m.dataViewer.table != "" {
+		tableInfo = fmt.Sprintf(" %s.%s ", m.dataViewer.schema, m.dataViewer.table)
+	} else {
+		tableInfo = ""
 	}
 
 	var execStatus string
@@ -170,8 +182,16 @@ func (m RootModel) renderStatusBar() string {
 		execStatus = ""
 	}
 
-	left := statusBarStyle.Render(fmt.Sprintf(" dbgenius |%s| %s%s ", dbInfo, focusStr, execStatus))
-	right := statusBarStyle.Render(" Ctrl+C: quit/cancel  |  Tab: switch  |  Esc: cmd  |  ?: help")
+	connStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#A6E3A1")) // green for connected
+	if m.db == nil {
+		connStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F38BA8")) // red for disconnected
+	}
+
+	left := statusBarStyle.Render(fmt.Sprintf(" dbgenius |%s|%s %s%s%s ",
+		dbInfo, connStyle.Render(connStatus), focusStr, tableInfo, execStatus))
+	right := statusBarStyle.Render(" Ctrl+C: quit/cancel  |  Tab/Ctrl+W: switch  |  Esc: cmd  |  ?: help")
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
@@ -204,6 +224,7 @@ func (m RootModel) buildHelpContent() string {
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("Ctrl+C / q"), helpDescStyle.Render("Quit dbgenius")))
 	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("Tab / Shift+Tab"), helpDescStyle.Render("Cycle focus between panels")))
+	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("Ctrl+W / Ctrl+Shift+Tab"), helpDescStyle.Render("Alternative focus switch")))
 	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("?"), helpDescStyle.Render("Toggle this help screen")))
 	b.WriteString("\n")
 

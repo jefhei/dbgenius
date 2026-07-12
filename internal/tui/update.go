@@ -175,13 +175,13 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			return m, nil
 
-		case "tab":
+		case "tab", "ctrl+w":
 			// Cycle forward through panels
 			m.focusedPanel = m.nextPanel()
 			m.syncFocus(&cmds)
 			return m, nil
 
-		case "shift+tab":
+		case "shift+tab", "ctrl+shift+tab":
 			// Cycle backward through panels
 			prev := (int(m.focusedPanel) - 1 + int(panelCount)) % int(panelCount)
 			m.focusedPanel = panel(prev)
