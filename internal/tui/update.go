@@ -155,31 +155,21 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// Set loading state
+			// Set streaming state
 			m.aiResponse = ""
-			m.dataViewer.state = viewerLoading
+			m.dataViewer.columns = []string{}
+			m.dataViewer.rows = nil
+			m.dataViewer.totalRows = 0
 			m.focusedPanel = panelResults
 
 			// Build schema context
-			var schemaCtx string
-			if m.db != nil {
-				ctx := context.Background()
-				schemaInfo, err := m.db.Introspect(ctx)
-				if err == nil && schemaInfo != nil && m.schemaContextBuilder != nil {
-					schemaCtx = m.schemaContextBuilder.BuildContext(schemaInfo, m.db.GetIntrospector())
-				}
-			}
+			schemaCtx := m.buildSchemaContext()
 
-			// Build prompt and send to Ollama in a goroutine
+			// Build prompt and stream from Ollama
 			aiClient := m.aiClient
 			prompt := ai.BuildExplainPrompt(schemaCtx, queryToExplain)
 			cmd = func() tea.Msg {
-				response, err := aiClient.Generate(context.Background(), "", prompt)
-				return aiResponseMsg{
-					response: response,
-					err:      err,
-					command:  cmdExplain,
-				}
+				return startExplainStream(aiClient, prompt)
 			}
 			return m, cmd
 
@@ -203,14 +193,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focusedPanel = panelResults
 
 			// Build schema context
-			var schemaCtx string
-			if m.db != nil {
-				ctx := context.Background()
-				schemaInfo, err := m.db.Introspect(ctx)
-				if err == nil && schemaInfo != nil && m.schemaContextBuilder != nil {
-					schemaCtx = m.schemaContextBuilder.BuildContext(schemaInfo, m.db.GetIntrospector())
-				}
-			}
+			schemaCtx := m.buildSchemaContext()
 
 			// Build prompt and send to Ollama
 			aiClient := m.aiClient
@@ -218,7 +201,6 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			prompt := ai.BuildSuggestPrompt(schemaCtx, userRequest)
 			cmd = func() tea.Msg {
 				response, err := aiClient.Generate(context.Background(), "", prompt)
-				// Extract SQL from the response
 				sql := extractSQL(response)
 				if sql == "" {
 					sql = "/* AI did not return a valid SQL query */\n" + response
@@ -237,7 +219,6 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focusedPanel = panelResults
 				return m, nil
 			}
-			// Take current editor content as the query to optimize
 			queryToOptimize := msg.Args
 			if queryToOptimize == "" {
 				queryToOptimize = msg.EditorContent
@@ -249,31 +230,21 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// Set loading state
+			// Set streaming state
 			m.aiResponse = ""
-			m.dataViewer.state = viewerLoading
+			m.dataViewer.columns = []string{}
+			m.dataViewer.rows = nil
+			m.dataViewer.totalRows = 0
 			m.focusedPanel = panelResults
 
 			// Build schema context
-			var schemaCtx string
-			if m.db != nil {
-				ctx := context.Background()
-				schemaInfo, err := m.db.Introspect(ctx)
-				if err == nil && schemaInfo != nil && m.schemaContextBuilder != nil {
-					schemaCtx = m.schemaContextBuilder.BuildContext(schemaInfo, m.db.GetIntrospector())
-				}
-			}
+			schemaCtx := m.buildSchemaContext()
 
-			// Build prompt and send to Ollama
+			// Build prompt and stream from Ollama
 			aiClient := m.aiClient
 			prompt := ai.BuildOptimizePrompt(schemaCtx, queryToOptimize)
 			cmd = func() tea.Msg {
-				response, err := aiClient.Generate(context.Background(), "", prompt)
-				return aiResponseMsg{
-					response: response,
-					err:      err,
-					command:  cmdOptimize,
-				}
+				return startOptimizeStream(aiClient, prompt)
 			}
 			return m, cmd
 
@@ -311,6 +282,24 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sqlEditor.SetValue(msg.query)
 			m.focusedPanel = panelEditor
 		}
+		return m, nil
+
+	case aiStreamTokenMsg:
+		// Handle streaming AI response token
+		if msg.err != nil {
+			m.aiResponse = ""
+			m.dataViewer.state = viewerError
+			m.dataViewer.errMsg = ai.FriendlyError(msg.err)
+		} else if msg.done {
+			m.aiResponse = msg.fullResponse
+		} else {
+			// Accumulate token into the response
+			m.aiResponse += msg.token
+			m.focusedPanel = panelResults
+			// Poll for the next token
+			return m, pollStreamCmd(msg.buffer)
+		}
+		m.focusedPanel = panelResults
 		return m, nil
 
 	case queryCancelledMsg:
@@ -522,4 +511,108 @@ func extractSQL(response string) string {
 
 	// No code block found — return the full response as-is
 	return strings.TrimSpace(response)
+}
+
+// buildSchemaContext builds the compact schema context for AI prompts.
+func (m *RootModel) buildSchemaContext() string {
+	if m.db == nil || m.schemaContextBuilder == nil {
+		return ""
+	}
+	ctx := context.Background()
+	schemaInfo, err := m.db.Introspect(ctx)
+	if err != nil || schemaInfo == nil {
+		return ""
+	}
+	return m.schemaContextBuilder.BuildContext(schemaInfo, m.db.GetIntrospector())
+}
+
+// startExplainStream kicks off a streaming generation for /explain.
+// Returns the first token as a message; subsequent tokens are sent through
+// the stream buffer channel and polled via TickMsg.
+func startExplainStream(client *ai.Client, prompt string) tea.Msg {
+	buf := &streamBuffer{
+		ch: make(chan aiStreamTokenMsg, 100),
+	}
+
+	go func() {
+		defer close(buf.ch)
+		err := client.GenerateStream(context.Background(), "", prompt, func(token string, done bool, fullResponse string) {
+			buf.ch <- aiStreamTokenMsg{
+				token:        token,
+				done:         done,
+				fullResponse: fullResponse,
+				err:          nil,
+				command:      cmdExplain,
+			}
+		})
+		if err != nil {
+			buf.ch <- aiStreamTokenMsg{
+				token:        "",
+				done:         true,
+				fullResponse: "",
+				err:          err,
+				command:      cmdExplain,
+			}
+		}
+	}()
+
+	// Read first token
+	msg, ok := <-buf.ch
+	if !ok {
+		return aiStreamTokenMsg{done: true, fullResponse: "", command: cmdExplain}
+	}
+	msg.buffer = buf
+	return msg
+}
+
+// startOptimizeStream kicks off a streaming generation for /optimize.
+func startOptimizeStream(client *ai.Client, prompt string) tea.Msg {
+	buf := &streamBuffer{
+		ch: make(chan aiStreamTokenMsg, 100),
+	}
+
+	go func() {
+		defer close(buf.ch)
+		err := client.GenerateStream(context.Background(), "", prompt, func(token string, done bool, fullResponse string) {
+			buf.ch <- aiStreamTokenMsg{
+				token:        token,
+				done:         done,
+				fullResponse: fullResponse,
+				err:          nil,
+				command:      cmdOptimize,
+			}
+		})
+		if err != nil {
+			buf.ch <- aiStreamTokenMsg{
+				token:        "",
+				done:         true,
+				fullResponse: "",
+				err:          err,
+				command:      cmdOptimize,
+			}
+		}
+	}()
+
+	// Read first token
+	msg, ok := <-buf.ch
+	if !ok {
+		return aiStreamTokenMsg{done: true, fullResponse: "", command: cmdOptimize}
+	}
+	msg.buffer = buf
+	return msg
+}
+
+// pollStreamCmd creates a command that reads the next token from the buffer.
+func pollStreamCmd(buf *streamBuffer) tea.Cmd {
+	if buf == nil || buf.stopped {
+		return nil
+	}
+	return func() tea.Msg {
+		msg, ok := <-buf.ch
+		if !ok {
+			return aiStreamTokenMsg{done: true, command: cmdExplain}
+		}
+		msg.buffer = buf
+		return msg
+	}
 }

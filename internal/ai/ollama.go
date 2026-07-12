@@ -256,6 +256,86 @@ func (c *Client) Generate(ctx context.Context, model, prompt string) (string, er
 	return result.Response, nil
 }
 
+// TokenCallback is called for each token received during streaming generation.
+type TokenCallback func(token string, done bool, fullResponse string)
+
+// GenerateStream sends a prompt to Ollama and streams the response tokens
+// via the provided callback. The callback is called with each token as it
+// arrives. When generation is complete, done is true and fullResponse contains
+// the complete response text.
+func (c *Client) GenerateStream(ctx context.Context, model, prompt string, callback TokenCallback) error {
+	if model == "" {
+		model = c.defaultModel
+	}
+
+	url := c.baseURL + "/api/generate"
+
+	reqBody := GenerateRequest{
+		Model:  model,
+		Prompt: prompt,
+		Stream: true,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return wrapConnectionError(c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return ServerError{
+			Status:  resp.StatusCode,
+			Message: strings.TrimSpace(string(body)),
+		}
+	}
+
+	// Parse SSE/NDJSON stream
+	var fullResponse strings.Builder
+	decoder := json.NewDecoder(resp.Body)
+
+	for {
+		var chunk struct {
+			Model    string `json:"model"`
+			Response string `json:"response"`
+			Done     bool   `json:"done"`
+			Error    string `json:"error,omitempty"`
+		}
+
+		if err := decoder.Decode(&chunk); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("stream decode error: %w", err)
+		}
+
+		if chunk.Error != "" {
+			return fmt.Errorf("Ollama error: %s", chunk.Error)
+		}
+
+		fullResponse.WriteString(chunk.Response)
+		callback(chunk.Response, chunk.Done, fullResponse.String())
+
+		if chunk.Done {
+			break
+		}
+	}
+
+	return nil
+}
+
 // wrapConnectionError wraps an HTTP error into a ConnectionError suitable for
 // user-friendly display.
 func wrapConnectionError(baseURL string, err error) error {

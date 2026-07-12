@@ -24,6 +24,23 @@ type aiSuggestionMsg struct {
 	err   error
 }
 
+// aiStreamTokenMsg is sent for each token during streaming AI generation.
+type aiStreamTokenMsg struct {
+	token        string
+	done         bool
+	fullResponse string
+	err          error
+	command      SlashCommand
+	buffer       *streamBuffer // for polling subsequent tokens
+}
+
+// streamBuffer holds streaming tokens that arrive asynchronously from an SSE stream.
+// Each token is delivered to the Bubble Tea event loop via channel polling.
+type streamBuffer struct {
+	ch      chan aiStreamTokenMsg
+	stopped bool
+}
+
 // RootModel is the top-level model managing all child models.
 type RootModel struct {
 	ready bool
