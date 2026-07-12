@@ -220,12 +220,26 @@ func (m SQLEditorModel) handleInsertModeKey(msg tea.KeyMsg) (SQLEditorModel, tea
 		return m, nil
 
 	case "ctrl+enter":
-		// Execute query
-		query := strings.TrimSpace(m.textarea.Value())
+		// Execute query or slash command
+		content := m.textarea.Value()
+		query := strings.TrimSpace(content)
 		if query == "" {
 			return m, nil
 		}
 		m.AddToHistory(query)
+
+		// Check if this is a slash command
+		if msg := ParseSlashCommand(query); msg.Command != cmdInvalid {
+			// Clear editor for slash commands (they're consumed, not kept as SQL)
+			if msg.Command != cmdHelp {
+				m.textarea.Reset()
+				m.scrollOffset = 0
+			}
+			return m, func() tea.Msg {
+				return msg
+			}
+		}
+
 		return m, func() tea.Msg {
 			return ExecuteQueryMsg{Query: query}
 		}
@@ -360,12 +374,25 @@ func (m SQLEditorModel) handleCommandModeKey(msg tea.KeyMsg) (SQLEditorModel, te
 		return m, nil
 
 	case "ctrl+enter":
-		// Execute query even in command mode
-		query := strings.TrimSpace(m.textarea.Value())
+		// Execute query or slash command even in command mode
+		content := m.textarea.Value()
+		query := strings.TrimSpace(content)
 		if query == "" {
 			return m, nil
 		}
 		m.AddToHistory(query)
+
+		// Check if this is a slash command
+		if msg := ParseSlashCommand(query); msg.Command != cmdInvalid {
+			if msg.Command != cmdHelp {
+				m.textarea.Reset()
+				m.scrollOffset = 0
+			}
+			return m, func() tea.Msg {
+				return msg
+			}
+		}
+
 		return m, func() tea.Msg {
 			return ExecuteQueryMsg{Query: query}
 		}
@@ -486,7 +513,7 @@ func (m SQLEditorModel) renderModeIndicator() string {
 	var hints string
 	switch m.mode {
 	case editorInsert:
-		hints = " Ctrl+Enter: run  |  Esc: command mode  |  Ctrl+U: clear"
+		hints = " Ctrl+Enter: run/slash  |  /explain, /suggest, /optimize  |  Esc: cmd"
 	case editorCommand:
 		hints = " i: insert  |  j/k: move  |  dd: delete line  |  Ctrl+Enter: run"
 	}

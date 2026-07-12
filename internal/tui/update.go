@@ -121,6 +121,46 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, cmd
 
+	case SlashCommandMsg:
+		// Handle slash commands from the editor
+		switch msg.Command {
+		case cmdHelp:
+			m.dataViewer.state = viewerLoaded
+			m.dataViewer.columns = []string{}
+			m.dataViewer.rows = nil
+			m.dataViewer.totalRows = 0
+			m.focusedPanel = panelResults
+			return m, nil
+
+		case cmdExplain:
+			// Will be implemented in M3.5
+			m.dataViewer.state = viewerError
+			m.dataViewer.errMsg = "⚠️  /explain requires Ollama connection (not yet configured)"
+			m.focusedPanel = panelResults
+			return m, nil
+
+		case cmdSuggest:
+			// Will be implemented in M3.6
+			m.dataViewer.state = viewerError
+			m.dataViewer.errMsg = "⚠️  /suggest requires Ollama connection (not yet configured)"
+			m.focusedPanel = panelResults
+			return m, nil
+
+		case cmdOptimize:
+			// Will be implemented in M3.7
+			m.dataViewer.state = viewerError
+			m.dataViewer.errMsg = "⚠️  /optimize requires Ollama connection (not yet configured)"
+			m.focusedPanel = panelResults
+			return m, nil
+
+		case cmdInvalid:
+			m.dataViewer.state = viewerError
+			m.dataViewer.errMsg = InvalidCommandError(msg.RawInput)
+			m.focusedPanel = panelResults
+			return m, nil
+		}
+		return m, nil
+
 	case queryCancelledMsg:
 		// Query was cancelled — reset state
 		m.isExecuting = false
