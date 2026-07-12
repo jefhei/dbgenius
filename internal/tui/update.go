@@ -237,8 +237,45 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focusedPanel = panelResults
 				return m, nil
 			}
+			// Take current editor content as the query to optimize
+			queryToOptimize := msg.Args
+			if queryToOptimize == "" {
+				queryToOptimize = msg.EditorContent
+			}
+			if queryToOptimize == "" {
+				m.dataViewer.state = viewerError
+				m.dataViewer.errMsg = "⚠️  No query to optimize. Type a query or /optimize <query>"
+				m.focusedPanel = panelResults
+				return m, nil
+			}
+
+			// Set loading state
+			m.aiResponse = ""
+			m.dataViewer.state = viewerLoading
 			m.focusedPanel = panelResults
-			return m, nil
+
+			// Build schema context
+			var schemaCtx string
+			if m.db != nil {
+				ctx := context.Background()
+				schemaInfo, err := m.db.Introspect(ctx)
+				if err == nil && schemaInfo != nil && m.schemaContextBuilder != nil {
+					schemaCtx = m.schemaContextBuilder.BuildContext(schemaInfo, m.db.GetIntrospector())
+				}
+			}
+
+			// Build prompt and send to Ollama
+			aiClient := m.aiClient
+			prompt := ai.BuildOptimizePrompt(schemaCtx, queryToOptimize)
+			cmd = func() tea.Msg {
+				response, err := aiClient.Generate(context.Background(), "", prompt)
+				return aiResponseMsg{
+					response: response,
+					err:      err,
+					command:  cmdOptimize,
+				}
+			}
+			return m, cmd
 
 		case cmdInvalid:
 			m.dataViewer.state = viewerError
