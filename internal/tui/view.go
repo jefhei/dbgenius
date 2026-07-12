@@ -129,14 +129,27 @@ func (m RootModel) renderEditorPanel() string {
 func (m RootModel) renderResultsPanel() string {
 	title := titleStyle.Render("📊 Results")
 	content := m.dataViewer.View()
-	if content == "" {
-		if m.isExecuting {
+	if content == "" || (m.aiResponse != "" && m.dataViewer.state != viewerLoading && m.dataViewer.state != viewerError) {
+		// Show AI response if available
+		if m.aiResponse != "" {
+			content = m.renderAIResponse()
+		} else if m.isExecuting {
 			content = m.renderQueryLoading()
 		} else {
 			content = "  Run a query to see results"
 		}
 	}
 	return fmt.Sprintf("%s\n%s", title, content)
+}
+
+// renderAIResponse displays the AI's response formatted for the TUI.
+func (m RootModel) renderAIResponse() string {
+	var b strings.Builder
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#CDD6F4")).
+		Padding(0, 1)
+	b.WriteString(style.Render(m.aiResponse))
+	return b.String()
 }
 
 // renderQueryLoading displays a loading indicator during query execution.

@@ -4,11 +4,19 @@ import (
 	"context"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jefhei/dbgenius/internal/ai"
 	"github.com/jefhei/dbgenius/internal/db"
 )
 
 // queryCancelledMsg is sent when a running query is cancelled by the user.
 type queryCancelledMsg struct{}
+
+// aiResponseMsg carries the AI's response to a slash command.
+type aiResponseMsg struct {
+	response string
+	err      error
+	command  SlashCommand
+}
 
 // RootModel is the top-level model managing all child models.
 type RootModel struct {
@@ -30,6 +38,13 @@ type RootModel struct {
 	// Async query execution state
 	isExecuting bool
 	queryCancel context.CancelFunc
+
+	// AI client for slash commands
+	aiClient         *ai.Client
+	schemaContextBuilder *ai.SchemaContextBuilder
+
+	// AI response state
+	aiResponse string
 }
 
 // panel identifies which panel currently has focus.
@@ -65,4 +80,10 @@ func (m RootModel) Init() tea.Cmd {
 func (m *RootModel) SetDB(database *db.IntrospectedBackend) {
 	m.db = database
 	m.schemaTree.SetDB(database, database.GetType())
+}
+
+// SetAIClient sets the AI client for slash commands.
+func (m *RootModel) SetAIClient(client *ai.Client) {
+	m.aiClient = client
+	m.schemaContextBuilder = ai.NewSchemaContextBuilder()
 }

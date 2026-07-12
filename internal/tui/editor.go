@@ -230,6 +230,8 @@ func (m SQLEditorModel) handleInsertModeKey(msg tea.KeyMsg) (SQLEditorModel, tea
 
 		// Check if this is a slash command
 		if msg := ParseSlashCommand(query); msg.Command != cmdInvalid {
+			// Set the full editor content
+			msg.EditorContent = content
 			// Clear editor for slash commands (they're consumed, not kept as SQL)
 			if msg.Command != cmdHelp {
 				m.textarea.Reset()
@@ -384,6 +386,7 @@ func (m SQLEditorModel) handleCommandModeKey(msg tea.KeyMsg) (SQLEditorModel, te
 
 		// Check if this is a slash command
 		if msg := ParseSlashCommand(query); msg.Command != cmdInvalid {
+			msg.EditorContent = content
 			if msg.Command != cmdHelp {
 				m.textarea.Reset()
 				m.scrollOffset = 0

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jefhei/dbgenius/internal/ai"
 )
 
 // defaultQueryTimeout is the default timeout for SQL query execution.
@@ -125,7 +126,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle slash commands from the editor
 		switch msg.Command {
 		case cmdHelp:
-			m.dataViewer.state = viewerLoaded
+			// Show help text in results panel
+			m.aiResponse = CommandHelpText()
 			m.dataViewer.columns = []string{}
 			m.dataViewer.rows = nil
 			m.dataViewer.totalRows = 0
@@ -133,23 +135,70 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case cmdExplain:
-			// Will be implemented in M3.5
-			m.dataViewer.state = viewerError
-			m.dataViewer.errMsg = "⚠️  /explain requires Ollama connection (not yet configured)"
+			// Take current editor content as the query to explain
+			queryToExplain := msg.Args
+			if queryToExplain == "" {
+				queryToExplain = msg.EditorContent
+			}
+			if queryToExplain == "" {
+				m.dataViewer.state = viewerError
+				m.dataViewer.errMsg = "⚠️  No query to explain. Type a query or /explain <query>"
+				m.focusedPanel = panelResults
+				return m, nil
+			}
+
+			if m.aiClient == nil {
+				m.dataViewer.state = viewerError
+				m.dataViewer.errMsg = "⚠️  Ollama not configured. Set up in config file or env vars."
+				m.focusedPanel = panelResults
+				return m, nil
+			}
+
+			// Set loading state
+			m.aiResponse = ""
+			m.dataViewer.state = viewerLoading
 			m.focusedPanel = panelResults
-			return m, nil
+
+			// Build schema context
+			var schemaCtx string
+			if m.db != nil {
+				ctx := context.Background()
+				schemaInfo, err := m.db.Introspect(ctx)
+				if err == nil && schemaInfo != nil && m.schemaContextBuilder != nil {
+					schemaCtx = m.schemaContextBuilder.BuildContext(schemaInfo, m.db.GetIntrospector())
+				}
+			}
+
+			// Build prompt and send to Ollama in a goroutine
+			aiClient := m.aiClient
+			prompt := ai.BuildExplainPrompt(schemaCtx, queryToExplain)
+			cmd = func() tea.Msg {
+				response, err := aiClient.Generate(context.Background(), "", prompt)
+				return aiResponseMsg{
+					response: response,
+					err:      err,
+					command:  cmdExplain,
+				}
+			}
+			return m, cmd
 
 		case cmdSuggest:
-			// Will be implemented in M3.6
-			m.dataViewer.state = viewerError
-			m.dataViewer.errMsg = "⚠️  /suggest requires Ollama connection (not yet configured)"
+			if m.aiClient == nil {
+				m.dataViewer.state = viewerError
+				m.dataViewer.errMsg = "⚠️  Ollama not configured. Set up in config file or env vars."
+				m.focusedPanel = panelResults
+				return m, nil
+			}
 			m.focusedPanel = panelResults
 			return m, nil
 
 		case cmdOptimize:
-			// Will be implemented in M3.7
-			m.dataViewer.state = viewerError
-			m.dataViewer.errMsg = "⚠️  /optimize requires Ollama connection (not yet configured)"
+			if m.aiClient == nil {
+				m.dataViewer.state = viewerError
+				m.dataViewer.errMsg = "⚠️  Ollama not configured. Set up in config file or env vars."
+				m.focusedPanel = panelResults
+				return m, nil
+			}
 			m.focusedPanel = panelResults
 			return m, nil
 
@@ -159,6 +208,21 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focusedPanel = panelResults
 			return m, nil
 		}
+		return m, nil
+
+	case aiResponseMsg:
+		// Handle AI response
+		if msg.err != nil {
+			m.aiResponse = ""
+			m.dataViewer.state = viewerError
+			m.dataViewer.errMsg = ai.FriendlyError(msg.err)
+		} else {
+			m.aiResponse = msg.response
+			m.dataViewer.columns = []string{}
+			m.dataViewer.rows = nil
+			m.dataViewer.totalRows = 0
+		}
+		m.focusedPanel = panelResults
 		return m, nil
 
 	case queryCancelledMsg:

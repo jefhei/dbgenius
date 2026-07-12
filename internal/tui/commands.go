@@ -18,9 +18,10 @@ const (
 
 // SlashCommandMsg is sent when a slash command is parsed from the editor.
 type SlashCommandMsg struct {
-	Command    SlashCommand
-	Args       string // Everything after the command name
-	RawInput   string // The original line that triggered the command
+	Command        SlashCommand
+	Args           string // Everything after the command name
+	RawInput       string // The original line that triggered the command
+	EditorContent  string // Full editor content when the command was triggered
 }
 
 // commandInfo holds metadata about a slash command.
