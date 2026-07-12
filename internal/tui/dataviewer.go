@@ -47,12 +47,18 @@ type tableDataErrorMsg struct {
 	table  string
 }
 
-// DataViewerModel provides a paginated view of table data.
+// copyCellMsg is sent when a cell content is copied to clipboard.
+type copyCellMsg struct {
+	content string
+}
+
+// DataViewerModel provides a paginated view of table data with
+// horizontal scrolling, cell selection, and clipboard copy support.
 type DataViewerModel struct {
 	state DataViewerState
 	db    *db.IntrospectedBackend
 
-	// Current table
+	// Current table / query
 	schema  string
 	table   string
 	columns []string
@@ -63,25 +69,38 @@ type DataViewerModel struct {
 	totalRows   int64
 	pageSize    int
 
-	// Viewport for scrolling
+	// Viewport for vertical scrolling (data rows only, header is pinned)
 	viewport viewport.Model
 
+	// Horizontal scrolling
+	hScrollOffset int
+
+	// Cell cursor for selection and copy
+	selectedRow int // row index within current page
+	selectedCol int // column index
+
 	// Styles
-	headerStyle     lipgloss.Style
-	cellStyle       lipgloss.Style
-	nullStyle       lipgloss.Style
-	helpStyle       lipgloss.Style
-	titleStyle      lipgloss.Style
-	loadingStyle    lipgloss.Style
-	errorStyle      lipgloss.Style
-	paginationStyle lipgloss.Style
-	separatorStyle  lipgloss.Style
+	headerStyle       lipgloss.Style
+	cellStyle         lipgloss.Style
+	nullStyle         lipgloss.Style
+	helpStyle         lipgloss.Style
+	titleStyle        lipgloss.Style
+	loadingStyle      lipgloss.Style
+	errorStyle        lipgloss.Style
+	paginationStyle   lipgloss.Style
+	separatorStyle    lipgloss.Style
+	selectedCellStyle lipgloss.Style
+	copiedStyle       lipgloss.Style
 
 	width  int
 	height int
 
 	// Error message
 	errMsg string
+
+	// Feedback message (e.g., "Copied!")
+	feedbackMsg   string
+	feedbackTimer int // ticks remaining for feedback display
 }
 
 // NewDataViewerModel creates a new data viewer model.
@@ -107,6 +126,14 @@ func NewDataViewerModel() DataViewerModel {
 			Foreground(lipgloss.Color("#6C7086")).
 			Italic(true).
 			Padding(0, 1),
+		selectedCellStyle: lipgloss.NewStyle().
+			Padding(0, 1).
+			Foreground(lipgloss.Color("#1E1E2E")).
+			Background(lipgloss.Color("#89B4FA")),
+		copiedStyle: lipgloss.NewStyle().
+			Padding(0, 1).
+			Foreground(lipgloss.Color("#1E1E2E")).
+			Background(lipgloss.Color("#A6E3A1")),
 		helpStyle: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#6C7086")),
 		titleStyle: lipgloss.NewStyle().
@@ -129,7 +156,7 @@ func NewDataViewerModel() DataViewerModel {
 func (m *DataViewerModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	viewportH := height - 2 // Reserve for pagination bar
+	viewportH := height - 3 // Reserve for title + pagination bar
 	if viewportH < 1 {
 		viewportH = 1
 	}
@@ -145,6 +172,10 @@ func (m *DataViewerModel) SelectTable(database *db.IntrospectedBackend, schema, 
 	m.currentPage = 0
 	m.state = viewerLoading
 	m.errMsg = ""
+	m.hScrollOffset = 0
+	m.selectedRow = 0
+	m.selectedCol = 0
+	m.feedbackMsg = ""
 	return loadTableDataCmd(database, schema, table, 0, m.pageSize)
 }
 
@@ -161,6 +192,10 @@ func (m DataViewerModel) Update(msg tea.Msg) (DataViewerModel, tea.Cmd) {
 		m.columns = msg.columns
 		m.rows = msg.rows
 		m.totalRows = msg.total
+		m.hScrollOffset = 0
+		m.selectedRow = 0
+		m.selectedCol = 0
+		m.feedbackMsg = ""
 		// Reset viewport scroll position
 		m.viewport.GotoTop()
 		return m, nil
@@ -175,27 +210,39 @@ func (m DataViewerModel) Update(msg tea.Msg) (DataViewerModel, tea.Cmd) {
 		m.errMsg = ""
 		return m, nil
 
+	case copyCellMsg:
+		// Feedback for clipboard copy
+		m.feedbackMsg = fmt.Sprintf("📋 Copied: %s", truncateDisplay(msg.content, 40))
+		m.feedbackTimer = 2
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.state != viewerLoaded {
 			return m, nil
 		}
 
 		switch msg.String() {
-		case "pgdown", "right":
+		case "pgdown":
 			if m.currentPage < m.maxPage() {
 				m.currentPage++
+				m.hScrollOffset = 0
+				m.selectedRow = 0
 				m.state = viewerLoading
 				return m, loadTableDataCmd(m.db, m.schema, m.table, m.currentPage, m.pageSize)
 			}
-		case "pgup", "left":
+		case "pgup":
 			if m.currentPage > 0 {
 				m.currentPage--
+				m.hScrollOffset = 0
+				m.selectedRow = 0
 				m.state = viewerLoading
 				return m, loadTableDataCmd(m.db, m.schema, m.table, m.currentPage, m.pageSize)
 			}
 		case "home":
 			if m.currentPage > 0 {
 				m.currentPage = 0
+				m.hScrollOffset = 0
+				m.selectedRow = 0
 				m.state = viewerLoading
 				return m, loadTableDataCmd(m.db, m.schema, m.table, 0, m.pageSize)
 			}
@@ -203,16 +250,143 @@ func (m DataViewerModel) Update(msg tea.Msg) (DataViewerModel, tea.Cmd) {
 			maxPg := m.maxPage()
 			if m.currentPage < maxPg {
 				m.currentPage = maxPg
+				m.hScrollOffset = 0
+				m.selectedRow = 0
 				m.state = viewerLoading
 				return m, loadTableDataCmd(m.db, m.schema, m.table, m.currentPage, m.pageSize)
 			}
+		case "right":
+			// Horizontal scroll right
+			maxCols := len(m.columns)
+			if m.selectedCol < maxCols-1 {
+				m.selectedCol++
+			}
+			m.clampHScroll()
+		case "left":
+			// Horizontal scroll left
+			if m.selectedCol > 0 {
+				m.selectedCol--
+			}
+			m.clampHScroll()
+		case "down":
+			if m.selectedRow < len(m.rows)-1 {
+				m.selectedRow++
+			}
+			// Also scroll viewport to keep cursor visible
+			m.ensureCursorVisible()
+		case "up":
+			if m.selectedRow > 0 {
+				m.selectedRow--
+			}
+			m.ensureCursorVisible()
+		case "y", "Y":
+			// Copy selected cell to clipboard
+			if m.selectedRow < len(m.rows) && m.selectedCol < len(m.columns) {
+				cell := m.rows[m.selectedRow][m.selectedCol]
+				content := ""
+				if cell != nil {
+					content = *cell
+				}
+				// Return a command that sends back a copy confirmation
+				return m, func() tea.Msg {
+					return copyCellMsg{content: content}
+				}
+			}
 		}
+
+		// Tick down feedback timer
+		if m.feedbackTimer > 0 {
+			m.feedbackTimer--
+			if m.feedbackTimer <= 0 {
+				m.feedbackMsg = ""
+			}
+		}
+
+		return m, nil
 	}
 
-	// Delegate to viewport for scrolling within results
+	// Delegate to viewport for vertical scrolling
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
 	return m, vpCmd
+}
+
+// clampHScroll ensures the horizontal scroll offset keeps the selected column visible.
+func (m *DataViewerModel) clampHScroll() {
+	if len(m.columns) == 0 {
+		m.hScrollOffset = 0
+		return
+	}
+
+	// Calculate how many columns we can show
+	visibleCols := m.visibleColumnCount()
+	if visibleCols <= 0 {
+		return
+	}
+
+	// If selected col is beyond the right edge, scroll right
+	if m.selectedCol >= m.hScrollOffset+visibleCols {
+		m.hScrollOffset = m.selectedCol - visibleCols + 1
+	}
+
+	// If selected col is before the left edge, scroll left
+	if m.selectedCol < m.hScrollOffset {
+		m.hScrollOffset = m.selectedCol
+	}
+
+	// Clamp hScrollOffset
+	if m.hScrollOffset > len(m.columns)-visibleCols {
+		m.hScrollOffset = len(m.columns) - visibleCols
+	}
+	if m.hScrollOffset < 0 {
+		m.hScrollOffset = 0
+	}
+}
+
+// ensureCursorVisible scrolls the viewport vertically so the selected row is visible.
+func (m *DataViewerModel) ensureCursorVisible() {
+	if m.viewport.Height <= 0 {
+		return
+	}
+
+	// Each data row takes 1 line
+	cursorLine := m.selectedRow
+	top := m.viewport.YOffset
+	bottom := top + m.viewport.Height - 1
+
+	if cursorLine < top {
+		m.viewport.YOffset = cursorLine
+	} else if cursorLine >= bottom {
+		m.viewport.YOffset = cursorLine - m.viewport.Height + 2
+	}
+
+	// Clamp
+	if m.viewport.YOffset < 0 {
+		m.viewport.YOffset = 0
+	}
+}
+
+// visibleColumnCount returns how many columns can fit in the available width.
+func (m DataViewerModel) visibleColumnCount() int {
+	colWidths := m.calcColumnWidths()
+	total := 0
+	count := 0
+	gapChars := 1 // one space between columns
+	for i := m.hScrollOffset; i < len(colWidths); i++ {
+		needed := colWidths[i] + 2 // padding
+		if count > 0 {
+			needed += gapChars
+		}
+		if total+needed > m.width {
+			break
+		}
+		total += needed
+		count++
+	}
+	if count == 0 && len(colWidths) > 0 {
+		return 1 // at least show one column
+	}
+	return count
 }
 
 // maxPage returns the maximum page index (0-based).
@@ -240,76 +414,176 @@ func (m DataViewerModel) View() string {
 	return ""
 }
 
-// renderTable renders the paginated table view.
+// renderTable renders the paginated table view with pinned header and horizontal scrolling.
 func (m DataViewerModel) renderTable() string {
-	// Build content string
+	// Build content with pinned header
 	var b strings.Builder
 
-	// Title
-	title := m.titleStyle.Render(fmt.Sprintf(" 📊 %s.%s", m.schema, m.table))
-	b.WriteString(title)
+	// Title line
+	if m.schema != "" && m.table != "" {
+		title := m.titleStyle.Render(fmt.Sprintf(" 📊 %s.%s", m.schema, m.table))
+		b.WriteString(title)
+	} else {
+		title := m.titleStyle.Render(" 📊 Query Result")
+		b.WriteString(title)
+	}
 	b.WriteString("\n")
 
 	if len(m.rows) == 0 {
-		b.WriteString(m.helpStyle.Render("  No data in this table.") + "\n")
+		b.WriteString(m.helpStyle.Render("  No data.") + "\n")
 		return b.String()
 	}
 
-	// Calculate column widths
+	// Calculate column widths (unscaled for scrolling)
 	colWidths := m.calcColumnWidths()
 
-	// Render header row
-	for i, col := range m.columns {
-		displayName := truncateDisplay(col, colWidths[i])
-		header := m.headerStyle.Width(colWidths[i]).Render(displayName)
-		b.WriteString(header)
-		if i < len(m.columns)-1 {
-			b.WriteString(" ")
-		}
+	// Determine which columns are visible
+	visibleCols := m.visibleColumnCount()
+	if visibleCols > len(m.columns)-m.hScrollOffset {
+		visibleCols = len(m.columns) - m.hScrollOffset
 	}
+	endCol := m.hScrollOffset + visibleCols
+	if endCol > len(m.columns) {
+		endCol = len(m.columns)
+	}
+
+	// Calculate actual rendered column widths within available space
+	renderedWidths := m.calcRenderedWidths(colWidths, m.hScrollOffset, endCol)
+
+	// Render pinned header row
+	headerRow := m.renderHeaderRow(m.columns[m.hScrollOffset:endCol], renderedWidths)
+	b.WriteString(headerRow)
 	b.WriteString("\n")
 
 	// Render separator
-	for i := range m.columns {
-		sep := strings.Repeat("─", colWidths[i])
-		b.WriteString(m.separatorStyle.Render(sep))
-		if i < len(m.columns)-1 {
-			b.WriteString(" ")
-		}
-	}
+	sepRow := m.renderSeparatorRow(renderedWidths)
+	b.WriteString(sepRow)
 	b.WriteString("\n")
 
-	// Render data rows
-	for _, row := range m.rows {
-		for i, cell := range row {
-			if i >= len(colWidths) {
-				break
-			}
-			var cellStr string
-			if cell == nil {
-				cellStr = m.nullStyle.Width(colWidths[i]).Render("NULL")
-			} else {
-				cellStr = m.cellStyle.Width(colWidths[i]).Render(truncateDisplay(*cell, colWidths[i]))
-			}
+	// Render data rows (with cell selection highlighting)
+	for rowIdx, row := range m.rows {
+		for colOffset, cell := range row[m.hScrollOffset:endCol] {
+			colIdx := m.hScrollOffset + colOffset
+			cellStr := m.renderCell(cell, renderedWidths[colOffset], rowIdx == m.selectedRow && colIdx == m.selectedCol)
 			b.WriteString(cellStr)
-			if i < len(m.columns)-1 {
+			if colOffset < len(renderedWidths)-1 {
 				b.WriteString(" ")
 			}
 		}
 		b.WriteString("\n")
 	}
 
-	// Set viewport content
+	// Set viewport content (data rows only — header is separate)
 	m.viewport.SetContent(b.String())
 
-	// Render viewport content with pagination
+	// Render viewport
 	viewportView := m.viewport.View()
+
+	// Build feedback bar (copy confirmation, scroll indicator)
+	feedbackBar := m.renderFeedbackBar(colWidths, m.hScrollOffset, endCol)
+
+	// Build pagination bar
 	paginationBar := m.renderPagination()
 
-	return viewportView + "\n" + paginationBar
+	return viewportView + "\n" + feedbackBar + paginationBar
 }
 
-// calcColumnWidths computes the display width for each column.
+// renderHeaderRow renders the table header for visible columns.
+func (m DataViewerModel) renderHeaderRow(columns []string, widths []int) string {
+	var b strings.Builder
+	for i, col := range columns {
+		displayName := truncateDisplay(col, widths[i])
+		header := m.headerStyle.Width(widths[i]).Render(displayName)
+		b.WriteString(header)
+		if i < len(columns)-1 {
+			b.WriteString(" ")
+		}
+	}
+	return b.String()
+}
+
+// renderSeparatorRow renders the separator line.
+func (m DataViewerModel) renderSeparatorRow(widths []int) string {
+	var b strings.Builder
+	for i, w := range widths {
+		sep := strings.Repeat("─", w)
+		b.WriteString(m.separatorStyle.Render(sep))
+		if i < len(widths)-1 {
+			b.WriteString(" ")
+		}
+	}
+	return b.String()
+}
+
+// renderCell renders a single cell with optional selection highlighting.
+func (m DataViewerModel) renderCell(cell *string, width int, selected bool) string {
+	var cellStr string
+	cellContent := "NULL"
+	if cell != nil {
+		cellContent = *cell
+	}
+
+	if selected {
+		// Selected cell gets highlighted background
+		cellStr = m.selectedCellStyle.Width(width).Render(truncateDisplay(cellContent, width))
+	} else if cell == nil {
+		cellStr = m.nullStyle.Width(width).Render("NULL")
+	} else {
+		cellStr = m.cellStyle.Width(width).Render(truncateDisplay(cellContent, width))
+	}
+	return cellStr
+}
+
+// renderFeedbackBar shows copy feedback and horizontal scroll indicator.
+func (m DataViewerModel) renderFeedbackBar(colWidths []int, hOffset, endCol int) string {
+	var parts []string
+
+	// Copy feedback
+	if m.feedbackMsg != "" {
+		parts = append(parts, m.copiedStyle.Render(m.feedbackMsg))
+	}
+
+	// Horizontal scroll indicator
+	totalCols := len(m.columns)
+	if totalCols > 0 {
+		scrollInfo := fmt.Sprintf(" Cols %d-%d of %d ", hOffset+1, endCol, totalCols)
+		parts = append(parts, m.paginationStyle.Render(scrollInfo))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(p)
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// renderPagination shows page info and navigation hints.
+func (m DataViewerModel) renderPagination() string {
+	firstRow := m.currentPage*m.pageSize + 1
+	lastRow := firstRow + len(m.rows) - 1
+	totalPages := m.maxPage() + 1
+
+	info := fmt.Sprintf(" Rows %d-%d of %d | Page %d/%d ",
+		firstRow, lastRow, m.totalRows, m.currentPage+1, totalPages)
+
+	nav := " pgup/pgdn: page  ←/→: hscroll  ↑/↓: cursor  y: copy "
+
+	padding := m.width - lipgloss.Width(m.paginationStyle.Render(info)) - lipgloss.Width(m.paginationStyle.Render(nav))
+	if padding < 0 {
+		padding = 0
+	}
+	spacer := strings.Repeat(" ", padding)
+
+	return m.paginationStyle.Render(info + spacer + nav)
+}
+
+// calcColumnWidths computes the natural display width for each column
+// (before horizontal scroll limiting).
 func (m DataViewerModel) calcColumnWidths() []int {
 	colWidths := make([]int, len(m.columns))
 	for i, col := range m.columns {
@@ -327,32 +601,11 @@ func (m DataViewerModel) calcColumnWidths() []int {
 		}
 	}
 
-	// Cap total width to viewer width (leave room for separators)
-	numCols := len(m.columns)
-	gapChars := 0
-	if numCols > 1 {
-		gapChars = numCols - 1
-	}
-	totalContentWidth := m.width - gapChars - 2 // -2 for safety margin
-	if totalContentWidth > 0 {
-		// Cap each column proportionally
-		total := 0
-		for _, w := range colWidths {
-			total += w
-		}
-		if total > totalContentWidth {
-			// Scale down proportionally
-			for i := range colWidths {
-				colWidths[i] = colWidths[i] * totalContentWidth / total
-			}
-			// Distribute remaining width
-			remaining := totalContentWidth
-			for _, w := range colWidths {
-				remaining -= w
-			}
-			if remaining > 0 {
-				colWidths[0] += remaining
-			}
+	// Cap each column to a reasonable max to prevent layout issues
+	maxColWidth := 60
+	for i := range colWidths {
+		if colWidths[i] > maxColWidth {
+			colWidths[i] = maxColWidth
 		}
 	}
 
@@ -366,24 +619,63 @@ func (m DataViewerModel) calcColumnWidths() []int {
 	return colWidths
 }
 
-// renderPagination shows page info and navigation hints.
-func (m DataViewerModel) renderPagination() string {
-	firstRow := m.currentPage*m.pageSize + 1
-	lastRow := firstRow + len(m.rows) - 1
-	totalPages := m.maxPage() + 1
-
-	info := fmt.Sprintf(" Rows %d-%d of %d | Page %d/%d ",
-		firstRow, lastRow, m.totalRows, m.currentPage+1, totalPages)
-
-	nav := " ←/→ pgup/pgdn navigate  Home/End first/last "
-
-	padding := m.width - lipgloss.Width(m.paginationStyle.Render(info)) - lipgloss.Width(m.paginationStyle.Render(nav))
-	if padding < 0 {
-		padding = 0
+// calcRenderedWidths adjusts column widths to fit the available viewport width.
+func (m DataViewerModel) calcRenderedWidths(colWidths []int, startCol, endCol int) []int {
+	visible := endCol - startCol
+	if visible <= 0 {
+		return nil
 	}
-	spacer := strings.Repeat(" ", padding)
 
-	return m.paginationStyle.Render(info + spacer + nav)
+	widths := make([]int, visible)
+	copy(widths, colWidths[startCol:endCol])
+
+	// Account for separator gaps between columns
+	numGaps := 0
+	if visible > 1 {
+		numGaps = visible - 1
+	}
+	gapChars := 1 // one space between columns
+	paddingChars := 2 * visible // left/right padding per column (1 each side)
+	totalReserved := numGaps*gapChars + paddingChars
+	availableWidth := m.width - totalReserved
+	if availableWidth < 10 {
+		availableWidth = 10
+	}
+
+	// Sum natural widths
+	total := 0
+	for _, w := range widths {
+		total += w
+	}
+
+	// Scale down if too wide
+	if total > availableWidth {
+		for i := range widths {
+			widths[i] = widths[i] * availableWidth / total
+		}
+		// Distribute remainder
+		used := 0
+		for _, w := range widths {
+			used += w
+		}
+		remainder := availableWidth - used
+		for i := range widths {
+			if remainder <= 0 {
+				break
+			}
+			widths[i]++
+			remainder--
+		}
+	}
+
+	// Ensure minimum width
+	for i := range widths {
+		if widths[i] < 3 {
+			widths[i] = 3
+		}
+	}
+
+	return widths
 }
 
 // truncateDisplay truncates a string to fit within maxLen, adding ellipsis.

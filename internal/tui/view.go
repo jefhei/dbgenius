@@ -243,10 +243,11 @@ func (m RootModel) buildHelpContent() string {
 	// Results
 	b.WriteString(helpSectionStyle.Render("Results Viewer (bottom-right panel)"))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("PgUp / PgDn"), helpDescStyle.Render("Scroll page up/down")))
-	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("← / →"), helpDescStyle.Render("Previous/next page")))
+	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("PgUp / PgDn"), helpDescStyle.Render("Previous/next page")))
 	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("Home / End"), helpDescStyle.Render("First/last page")))
-	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("↑ / ↓"), helpDescStyle.Render("Scroll within results")))
+	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("← / →"), helpDescStyle.Render("Horizontal scroll columns")))
+	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("↑ / ↓"), helpDescStyle.Render("Move cell cursor (select cell)")))
+	b.WriteString(fmt.Sprintf("  %s  %s\n", helpKeyStyle.Render("Y / y"), helpDescStyle.Render("Copy selected cell content")))
 
 	return b.String()
 }
