@@ -1,9 +1,14 @@
 package tui
 
 import (
+	"context"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jefhei/dbgenius/internal/db"
 )
+
+// queryCancelledMsg is sent when a running query is cancelled by the user.
+type queryCancelledMsg struct{}
 
 // RootModel is the top-level model managing all child models.
 type RootModel struct {
@@ -21,6 +26,10 @@ type RootModel struct {
 
 	// Show help overlay
 	showHelp bool
+
+	// Async query execution state
+	isExecuting bool
+	queryCancel context.CancelFunc
 }
 
 // panel identifies which panel currently has focus.

@@ -130,9 +130,21 @@ func (m RootModel) renderResultsPanel() string {
 	title := titleStyle.Render("📊 Results")
 	content := m.dataViewer.View()
 	if content == "" {
-		content = "  Run a query to see results"
+		if m.isExecuting {
+			content = m.renderQueryLoading()
+		} else {
+			content = "  Run a query to see results"
+		}
 	}
 	return fmt.Sprintf("%s\n%s", title, content)
+}
+
+// renderQueryLoading displays a loading indicator during query execution.
+func (m RootModel) renderQueryLoading() string {
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#F9E2AF")).
+		Italic(true)
+	return style.Render("\n  ⏳ Executing query...\n  Press Ctrl+C to cancel")
 }
 
 func (m RootModel) renderStatusBar() string {
@@ -151,8 +163,15 @@ func (m RootModel) renderStatusBar() string {
 		dbInfo = " NO DB "
 	}
 
-	left := statusBarStyle.Render(fmt.Sprintf(" dbgenius |%s| %s ", dbInfo, focusStr))
-	right := statusBarStyle.Render(" Ctrl+C: quit  |  Tab: switch  |  Esc: cmd  |  ?: help")
+	var execStatus string
+	if m.isExecuting {
+		execStatus = " ⏳ QUERY RUNNING... "
+	} else {
+		execStatus = ""
+	}
+
+	left := statusBarStyle.Render(fmt.Sprintf(" dbgenius |%s| %s%s ", dbInfo, focusStr, execStatus))
+	right := statusBarStyle.Render(" Ctrl+C: quit/cancel  |  Tab: switch  |  Esc: cmd  |  ?: help")
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {

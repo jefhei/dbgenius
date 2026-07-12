@@ -2,10 +2,15 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// defaultQueryTimeout is the default timeout for SQL query execution.
+const defaultQueryTimeout = 30 * time.Second
 
 // Update handles all messages and returns the updated model.
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -54,7 +59,6 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ExecuteQueryMsg:
 		// Query submitted from the editor
-		// Execute the query against the current database connection
 		if m.db == nil {
 			return m, nil
 		}
@@ -62,15 +66,50 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Delegate to data viewer for execution
-		// (uses existing load mechanism — M2.5 will provide proper async handling)
+		// Cancel any previous running query
+		if m.queryCancel != nil {
+			m.queryCancel()
+			m.queryCancel = nil
+		}
+
+		// Reset data viewer to loading state
+		m.dataViewer.state = viewerLoading
+		m.dataViewer.errMsg = ""
+
+		// Create cancellable context with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+		m.queryCancel = cancel
+		m.isExecuting = true
+
 		queryCopy := msg.Query
 		dbCopy := m.db
+
+		// Switch focus to results panel after executing
+		m.focusedPanel = panelResults
+
 		cmd = func() tea.Msg {
-			result, err := dbCopy.ExecuteQuery(context.Background(), queryCopy)
+			defer cancel()
+
+			result, err := dbCopy.ExecuteQuery(ctx, queryCopy)
+
+			// Check for cancellation first
+			if errors.Is(err, context.Canceled) {
+				return queryCancelledMsg{}
+			}
+
+			// Check for deadline exceeded
+			if errors.Is(err, context.DeadlineExceeded) {
+				return tableDataErrorMsg{
+					err:    fmt.Errorf("query timed out after %v", defaultQueryTimeout),
+					schema: "",
+					table:  "",
+				}
+			}
+
 			if err != nil {
 				return tableDataErrorMsg{err: err, schema: "", table: ""}
 			}
+
 			return tableDataLoadedMsg{
 				columns: result.Columns,
 				rows:    result.Rows,
@@ -80,25 +119,51 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Switch focus to results panel after executing
-		m.focusedPanel = panelResults
 		return m, cmd
 
+	case queryCancelledMsg:
+		// Query was cancelled — reset state
+		m.isExecuting = false
+		m.queryCancel = nil
+		return m, nil
+
 	case tableDataLoadedMsg:
-		// Data loaded — delegate to data viewer
+		// Data loaded — reset executing state and delegate to data viewer
+		m.isExecuting = false
+		m.queryCancel = nil
 		var dvCmd tea.Cmd
 		m.dataViewer, dvCmd = m.dataViewer.Update(msg)
 		cmds = append(cmds, dvCmd)
 
 	case tableDataErrorMsg:
-		// Error loading data — delegate to data viewer
+		// Error loading data — reset executing state and delegate to data viewer
+		m.isExecuting = false
+		m.queryCancel = nil
 		var dvCmd tea.Cmd
 		m.dataViewer, dvCmd = m.dataViewer.Update(msg)
 		cmds = append(cmds, dvCmd)
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
+			// If a query is executing, cancel it instead of quitting
+			if m.isExecuting && m.queryCancel != nil {
+				m.queryCancel()
+				m.queryCancel = nil
+				return m, nil
+			}
+			// If help is open, close it first
+			if m.showHelp {
+				m.showHelp = false
+				return m, nil
+			}
+			return m, tea.Quit
+
+		case "q":
+			// Only quit if not executing a query
+			if m.isExecuting {
+				return m, nil
+			}
 			// If help is open, close it first
 			if m.showHelp {
 				m.showHelp = false

@@ -170,6 +170,11 @@ func (m DataViewerModel) Update(msg tea.Msg) (DataViewerModel, tea.Cmd) {
 		m.errMsg = db.FriendlyError(msg.err)
 		return m, nil
 
+	case queryCancelledMsg:
+		m.state = viewerIdle
+		m.errMsg = ""
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.state != viewerLoaded {
 			return m, nil
